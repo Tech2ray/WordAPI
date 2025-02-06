@@ -1,0 +1,207 @@
+import psycopg2
+from datetime import datetime, timedelta
+import unittest
+
+# Databaseoppsett
+def create_tables():
+    # Opprett tilkobling til PostgreSQL
+    conn = psycopg2.connect(
+        dbname="your_database_name",  # Erstatt med ditt databasenavn
+        user="your_username",        # Erstatt med ditt brukernavn
+        password="your_password",    # Erstatt med ditt passord
+        host="localhost",            # Erstatt med din host (f.eks. 'localhost')
+        port="5432"                  # Standard PostgreSQL-port
+    )
+    c = conn.cursor()
+
+    # Tabell for brukere
+    c.execute('''CREATE TABLE IF NOT EXISTS users (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    email TEXT UNIQUE NOT NULL
+                )''')
+
+    # Tabell for abonnementer
+    c.execute('''CREATE TABLE IF NOT EXISTS subscriptions (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    plan_name TEXT NOT NULL,
+                    price REAL NOT NULL,
+                    start_date TEXT NOT NULL,
+                    end_date TEXT NOT NULL,
+                    FOREIGN KEY (user_id) REFERENCES users (id)
+                )''')
+
+    # Tabell for fakturaer
+    c.execute('''CREATE TABLE IF NOT EXISTS invoices (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    subscription_id INTEGER NOT NULL,
+                    amount REAL NOT NULL,
+                    invoice_date TEXT NOT NULL,
+                    due_date TEXT NOT NULL,
+                    paid BOOLEAN DEFAULT FALSE,
+                    FOREIGN KEY (user_id) REFERENCES users (id),
+                    FOREIGN KEY (subscription_id) REFERENCES subscriptions (id)
+                )''')
+
+    conn.commit()
+    return conn
+
+# Klasser
+class User:
+    def __init__(self, name, email):
+        self.name = name
+        self.email = email
+
+    def save(self, conn):
+        c = conn.cursor()
+        c.execute("INSERT INTO users (name, email) VALUES (%s, %s)", (self.name, self.email))
+        conn.commit()
+
+class Subscription:
+    def __init__(self, user_id, plan_name, price, start_date, end_date):
+        self.user_id = user_id
+        self.plan_name = plan_name
+        self.price = price
+        self.start_date = start_date
+        self.end_date = end_date
+
+    def save(self, conn):
+        c = conn.cursor()
+        c.execute("INSERT INTO subscriptions (user_id, plan_name, price, start_date, end_date) VALUES (%s, %s, %s, %s, %s)",
+                  (self.user_id, self.plan_name, self.price, self.start_date, self.end_date))
+        conn.commit()
+
+class Invoice:
+    def __init__(self, user_id, subscription_id, amount, invoice_date, due_date):
+        self.user_id = user_id
+        self.subscription_id = subscription_id
+        self.amount = amount
+        self.invoice_date = invoice_date
+        self.due_date = due_date
+
+    def save(self, conn):
+        c = conn.cursor()
+        c.execute("INSERT INTO invoices (user_id, subscription_id, amount, invoice_date, due_date) VALUES (%s, %s, %s, %s, %s)",
+                  (self.user_id, self.subscription_id, self.amount, self.invoice_date, self.due_date))
+        conn.commit()
+
+# Hjelpefunksjoner
+def get_user_invoices(conn, user_id):
+    c = conn.cursor()
+    c.execute("SELECT * FROM invoices WHERE user_id = %s", (user_id,))
+    return c.fetchall()
+
+def mark_invoice_as_paid(conn, invoice_id):
+    c = conn.cursor()
+    c.execute("UPDATE invoices SET paid = TRUE WHERE id = %s", (invoice_id,))
+    conn.commit()
+
+# Tester
+class TestSubscriptionSystem(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        """Opprett en PostgreSQL-database og tabeller for testing."""
+        cls.conn = create_tables()
+
+    @classmethod
+    def tearDownClass(cls):
+        """Lukk databasetilkoblingen etter testing."""
+        cls.conn.close()
+
+    def setUp(self):
+        """Tøm alle tabeller før hver test."""
+        c = self.conn.cursor()
+        c.execute("DELETE FROM users")
+        c.execute("DELETE FROM subscriptions")
+        c.execute("DELETE FROM invoices")
+        self.conn.commit()
+
+    def test_user_creation(self):
+        """Test at en bruker kan opprettes."""
+        user = User(name="Testbruker", email="test@example.com")
+        user.save(self.conn)
+
+        c = self.conn.cursor()
+        c.execute("SELECT * FROM users WHERE email = %s", ("test@example.com",))
+        result = c.fetchone()
+        self.assertIsNotNone(result)
+        self.assertEqual(result[1], "Testbruker")
+
+    def test_subscription_creation(self):
+        """Test at et abonnement kan opprettes."""
+        user = User(name="Testbruker", email="test@example.com")
+        user.save(self.conn)
+
+        start_date = datetime.now().strftime('%Y-%m-%d')
+        end_date = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
+        subscription = Subscription(user_id=1, plan_name="Testabonnement", price=99.99, start_date=start_date, end_date=end_date)
+        subscription.save(self.conn)
+
+        c = self.conn.cursor()
+        c.execute("SELECT * FROM subscriptions WHERE user_id = %s", (1,))
+        result = c.fetchone()
+        self.assertIsNotNone(result)
+        self.assertEqual(result[2], "Testabonnement")
+
+    def test_invoice_creation(self):
+        """Test at en faktura kan opprettes."""
+        user = User(name="Testbruker", email="test@example.com")
+        user.save(self.conn)
+
+        start_date = datetime.now().strftime('%Y-%m-%d')
+        end_date = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
+        subscription = Subscription(user_id=1, plan_name="Testabonnement", price=99.99, start_date=start_date, end_date=end_date)
+        subscription.save(self.conn)
+
+        invoice_date = datetime.now().strftime('%Y-%m-%d')
+        due_date = (datetime.now() + timedelta(days=14)).strftime('%Y-%m-%d')
+        invoice = Invoice(user_id=1, subscription_id=1, amount=99.99, invoice_date=invoice_date, due_date=due_date)
+        invoice.save(self.conn)
+
+        c = self.conn.cursor()
+        c.execute("SELECT * FROM invoices WHERE user_id = %s", (1,))
+        result = c.fetchone()
+        self.assertIsNotNone(result)
+        self.assertEqual(result[3], 99.99)
+
+    def test_mark_invoice_as_paid(self):
+        """Test at en faktura kan markeres som betalt."""
+        user = User(name="Testbruker", email="test@example.com")
+        user.save(self.conn)
+
+        start_date = datetime.now().strftime('%Y-%m-%d')
+        end_date = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
+        subscription = Subscription(user_id=1, plan_name="Testabonnement", price=99.99, start_date=start_date, end_date=end_date)
+        subscription.save(self.conn)
+
+        invoice_date = datetime.now().strftime('%Y-%m-%d')
+        due_date = (datetime.now() + timedelta(days=14)).strftime('%Y-%m-%d')
+        invoice = Invoice(user_id=1, subscription_id=1, amount=99.99, invoice_date=invoice_date, due_date=due_date)
+        invoice.save(self.conn)
+
+        # Debug: Skriv ut faktura-ID
+        print(f"Faktura opprettet med ID: {invoice.id}")
+
+        # Marker fakturaen som betalt ved hjelp av dens ID
+        mark_invoice_as_paid(self.conn, invoice.id)
+
+        # Debug: Skriv ut faktura-ID som markeres som betalt
+        print(f"Markerer faktura med ID: {invoice.id} som betalt")
+
+        # Hent den oppdaterte fakturaen
+        c = self.conn.cursor()
+        c.execute("SELECT paid FROM invoices WHERE id = %s", (invoice.id,))
+        result = c.fetchone()
+
+        # Debug: Skriv ut spørringsresultatet
+        print(f"Spørringsresultat: {result}")
+
+        # Sjekk at fakturaen er markert som betalt
+        self.assertIsNotNone(result, "Fakturaen ble ikke funnet i databasen.")
+        self.assertEqual(result[0], True, "Fakturaen ble ikke markert som betalt.")
+
+# Kjør testene
+if __name__ == '__main__':
+    unittest.main()
